@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Database Agent</title>
+    <!-- The CSS file is linked here -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- Using the Inter font for a clean, modern UI look -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <!-- Simplified header for a less cluttered appearance -->
+            <h1>AI Database Agent</h1>
+            <p>Ask a question in natural language to query your database.</p>
+        </header>
+
+        <main>
+            <div class="query-form">
+                <textarea id="question-input" placeholder="e.g., How many employees are in the engineering department?"></textarea>
+                <button id="submit-btn">Ask Agent</button>
+            </div>
+
+            <div class="response-area">
+                <div class="response-header">
+                    <h2>Agent's Response</h2>
+                    <button id="copy-btn" title="Copy to clipboard">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                          <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+                          <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zM9 2H7v.5a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5V2z"/>
+                        </svg>
+                        <span>Copy</span>
+                    </button>
+                </div>
+                <div id="loader" class="loader" style="display: none;"></div>
+                <div id="response-output" class="response-text">
+                    Your answer will appear here...
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Javascript functionality remains the same
+        const submitBtn = document.getElementById('submit-btn');
+        const questionInput = document.getElementById('question-input');
+        const responseOutput = document.getElementById('response-output');
+        const loader = document.getElementById('loader');
+        const copyBtn = document.getElementById('copy-btn');
+
+        const handleQuery = async () => {
+            const question = questionInput.value.trim();
+
+            if (!question) {
+                responseOutput.textContent = 'Please enter a question.';
+                return;
+            }
+
+            loader.style.display = 'block';
+            responseOutput.innerHTML = '';
+            copyBtn.style.display = 'none';
+            
+            try {
+                const response = await fetch('/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question: question }),
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'An error occurred.');
+                }
+
+                const data = await response.json();
+                // Show both SQL and final answer
+                responseOutput.innerHTML = `
+                    <div><strong>SQL Query:</strong></div>
+                    <pre>${data.sql || 'N/A'}</pre>
+                    <div><strong>Final Answer:</strong></div>
+                    <pre>${data.final_answer || 'N/A'}</pre>
+                `;
+                copyBtn.style.display = 'flex';
+
+            } catch (error) {
+                responseOutput.textContent = `Error: ${error.message}`;
+            } finally {
+                loader.style.display = 'none';
+            }
+        };
+
+        submitBtn.addEventListener('click', handleQuery);
+        
+        questionInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                handleQuery();
+            }
+        });
+
+        copyBtn.addEventListener('click', () => {
+            const textToCopy = responseOutput.textContent;
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                const copyBtnSpan = copyBtn.querySelector('span');
+                copyBtnSpan.textContent = 'Copied!';
+                setTimeout(() => {
+                    copyBtnSpan.textContent = 'Copy';
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy text: ', err);
+            });
+        });
+    </script>
+</body>
+</html>
