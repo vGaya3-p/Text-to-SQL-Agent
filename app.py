@@ -1,3 +1,4 @@
+
 import os
 import re
 import time
@@ -533,198 +534,55 @@ def sql_references_table(sql: str) -> bool:
 # 4) DOMAIN HINTS & BUSINESS CONTEXT
 # -----------------------------
 
-# Comprehensive domain hints for ZeeProc CSM platform
+# Domain hints for BikeStores (Production & Sales)
 DOMAIN_HINTS_TEXT = """
 ## Schema-to-Domain Mapping
-- **zeeproc**: Core platform data for customer success management, including master customer data (zeeproc.mastercustomertable), agent run metadata (zeeproc.agent_run_metadata), communications (zeeproc.communication_log), and client goals (zeeproc.client_goals)
-- **crm**: Customer Relationship Management (external CRM integration, customer data) such as crm.crm_account, crm.crm_contact, crm.crm_deal
-- **sm**: Service Management (communication logs, email management, support tickets) such as sm.sm_account, sm.sm_contact, sm.sm_case
-- **onboarding**: Customer onboarding workflows, milestones, tasks, and outcomes like onboarding.onboarding_plan, onboarding.plan_milestone, onboarding.plan_task
-- **pat**: Platform Analytics & Tracking (agent performance, metrics, automation logs) including pat.pat_user, pat.pat_daily_metrics, pat.pat_engagement_metrics
+- **production**: Inventory catalog. Contains data about what products exist, their brands, categories, and current stock levels.
+- **sales**: Transactional data. Contains customers, orders, staff, stores, and line items.
 
 ## Business Term Mappings
-- "customer name" → zeeproc.mastercustomertable.customer_company_name
-- "customer id" → zeeproc.mastercustomertable.customer_id
-- "account name" → crm.crm_account.account_name
-- "deal amount" → crm.crm_deal.amount
-- "case status" → sm.sm_case.status
-- "plan status" → onboarding.onboarding_plan.status
-- "task name" → onboarding.plan_task.name
-- "agent name" → zeeproc.agent_run_metadata.agent_name
-- "metric value" → pat.pat_engagement_metrics.events_count
+- "client" or "buyer" → sales.customers
+- "bike" or "item" → production.products
+- "shop" or "location" → sales.stores
+- "manager" → sales.staffs (look for staff_id referenced by manager_id)
+- "employee" or "worker" → sales.staffs
+- "brand" → production.brands.brand_name
+- "category" → production.categories.category_name
 
-### Customer Health & Status
-- "customer health" → Look in crm.crm_account, sm.sm_case_metrics, onboarding.onboarding_plan, zeeproc.mastercustomertable
-- "customer status" → Check crm.crm_account, onboarding.onboarding_plan.status, zeeproc.client_goals.task_status
-- "overdue" → Look for dates < current_date in onboarding.plan_milestone, onboarding.plan_task
-- "at-risk customers" → Check pat.pat_engagement_metrics, sm.sm_case_metrics, onboarding.onboarding_plan delays, zeeproc.agent_execution_logs failures
-- "renewal dates" → Look in crm.crm_deal.close_date, crm.crm_financial_metrics
-- "satisfaction scores" → Check zeeproc.client_goals, sm.sm_case_metrics
+### Revenue & Financial Calculations
+- "revenue" or "sales amount" → Calculate as: SUM(sales.order_items.quantity * sales.order_items.list_price * (1 - sales.order_items.discount))
+- "list price" → The base price in production.products or sales.order_items.
+- "discounted price" → list_price * (1 - discount)
+- "order volume" → COUNT(sales.orders.order_id)
 
-### Revenue & Financial Analytics
-- "ARR" (Annual Recurring Revenue) → crm.crm_financial_metrics.total_mrr
-- "revenue" → crm.crm_deal.amount, crm.crm_financial_metrics.total_revenue_current_value
-- "upsell opportunities" → Check crm.crm_product, crm.crm_deal.deal_stage, pat.pat_daily_metrics usage patterns
-- "churn risk" → Analyze low values in pat.pat_engagement_metrics.events_count or session_duration over time, sm.sm_case frequency, onboarding.onboarding_plan delays
-- "financial metrics" → crm.crm_financial_metrics, crm.crm_order.total_amount
+### Inventory & Stock
+- "in stock" → production.stocks.quantity > 0
+- "out of stock" → production.stocks.quantity = 0
+- "inventory count" → SUM(production.stocks.quantity)
+- "most stocked store" → Store with highest SUM(quantity) in production.stocks
 
-### Agent Performance & Automation
-- "agent performance" → zeeproc.agent_execution_logs, zeeproc.agent_run_metadata, zeeproc.agent_execution_functional_metrics
-- "automated tasks" → zeeproc.agent_run_metadata, zeeproc.agent_execution_details
-- "AI agents" → zeeproc.agent_execution_logs, zeeproc.agent_prompts, zeeproc.agent_run_metadata
-- "agent success rates" → zeeproc.agent_run_metadata.is_completed, zeeproc.agent_execution_logs success rates
-- "agent failures" → zeeproc.agent_execution_logs with error conditions, zeeproc.agent_notification
+### Order Status Logic (sales.orders.order_status)
+- 1 = Pending
+- 2 = Processing
+- 3 = Rejected
+- 4 = Completed
+- "Completed orders" → order_status = 4
+- "Active orders" → order_status IN (1, 2)
 
-### Communication & Engagement
-- "emails" → sm.sm_case, zeeproc.communication_log, zeeproc.communication_detail
-- "unread emails" → zeeproc.communication_log.state = 'UNREAD' 'UNREAD' word should be in caps lock.
-- "communication logs" → sm.sm_case, zeeproc.communication_log, zeeproc.communication_detail
-- "response time" → Calculate from zeeproc.communication_log.created_at timestamps
-- "sentiment" → Check zeeproc.communication_detail.content analysis
-- "support tickets" → sm.sm_case, sm.sm_case_metrics
-
-### Onboarding & Project Management
-- "onboarding" → onboarding.onboarding_plan, onboarding.plan_milestone, onboarding.plan_task
-- "milestones" → onboarding.plan_milestone, onboarding.milestone_goal
-- "onboarding progress" → Check onboarding.plan_milestone.status, onboarding.plan_task.is_completed
-- "behind schedule" → Compare onboarding.plan_milestone.actual_end_date vs end_date, onboarding.plan_task.actual_end_date vs end_date
-- "completion rates" → Calculate from onboarding.plan_milestone.status, onboarding.plan_task.is_completed
-- "time-to-value" → Measure from onboarding.onboarding_plan.created_at to first completed milestone
-
-### Team & Workload Management
-- "CSM workload" → Count active customers per CSM in zeeproc.mastercustomertable, onboarding.plan_task assignments
-- "workload distribution" → Analyze onboarding.plan_task.owner_name, onboarding.plan_stakeholder assignments
-- "overdue tasks" → Check onboarding.plan_task where end_date < current_date and is_completed = false
-- "team performance" → Compare completion rates across onboarding.plan_task.owner_name, onboarding.plan_stakeholder.name
-
-## Key Entity Relationships
-- **Customer Data Flow**: zeeproc.mastercustometable → (crm.crm_account, onboarding.onboarding_plan, sm.sm_account)
-- **Communication Flow**: zeeproc.communication_log → zeeproc.communication_detail → sm.sm_case
-- **Agent Execution**: zeeproc.agent_run_metadata → zeeproc.agent_run_details → zeeproc.agent_execution_logs
-- **Onboarding Flow**: onboarding.onboarding_plan → onboarding.plan_milestone → onboarding.plan_task
-- **CRM Integration**: crm.crm_account → crm.crm_contact → crm.crm_deal → crm.crm_activity
+## Key Entity Relationships (Cross-Schema)
+- **Product Sales**: sales.order_items.product_id links to production.products.product_id
+- **Store Inventory**: production.stocks.store_id links to sales.stores.store_id
+- **Store Sales**: sales.orders.store_id links to sales.stores.store_id
 
 ## Common Query Patterns
-- Cross-schema queries often join: zeeproc.mastercustomertable + crm.crm_account + onboarding.onboarding_plan + sm.sm_account
-- Agent performance queries typically involve: zeeproc.agent_run_metadata + zeeproc.agent_execution_logs + zeeproc.agent_execution_functional_metrics
-- Customer health queries combine: crm.crm_account + zeeproc.communication_log + onboarding.onboarding_plan + pat.pat_engagement_metrics
-- Revenue queries focus on: crm.crm_deal + crm.crm_financial_metrics + crm.crm_order
+- **Best Selling Products**: Join sales.order_items -> production.products. Group by product_name. Order by SUM(quantity) desc.
+- **Staff Performance**: Join sales.orders -> sales.staffs. Count orders per staff member.
+- **Customer History**: Join sales.customers -> sales.orders -> sales.order_items.
 
 ## Important Notes
-- Always use fully qualified table names (schema.table) for cross-schema queries
-- Customer data spans multiple schemas - use customer_id for joins across zeeproc.mastercustomertable, crm.crm_account, onboarding.onboarding_plan, sm.sm_account, pat.pat_user
-- Agent execution data is primarily in zeeproc schema (agent_run_metadata, agent_execution_logs, agent_prompts)
-- Communication data is in zeeproc schema (communication_log, communication_detail)
-- Service management data is in sm schema (sm_account, sm_contact, sm_case)
-- Onboarding workflows are in onboarding schema
-- CRM data is in crm schema
-- Analytics data is in pat schema
-
-## Common Table Patterns by Domain
-
-### Customer Management
-- zeeproc.mastercustomertable, crm.crm_account, crm.crm_contact, crm.crm_deal
-
-### Communication & Support
-- zeeproc.communication_log, zeeproc.communication_detail, sm.sm_accounts, sm.sm_contacts, sm.sm_case, sm.sm_case_metrics
-
-### Onboarding & Project Management  
-- onboarding.plan_template, onboarding.onboarding_plan, onboarding.plan_milestone, onboarding.plan_task
-- onboarding.plan_outcome, onboarding.milestone_goal, onboarding.plan_stakeholder, onboarding.plan_feedback_contact
-
-### Agent Performance & Analytics
-- zeeproc.agent_run_metadata, zeeproc.agent_run_details, zeeproc.agent_prompts, zeeproc.agent_execution_logs
-- zeeproc.agent_execution_details, zeeproc.agent_notification, zeeproc.agent_execution_functional_metrics
-
-### Platform Analytics & Tracking
-- pat.pat_user, pat.pat_daily_metrics, pat.pat_summary_metrics, pat.pat_engagement_metrics
-
-### Financial & Revenue
-- crm.crm_financial_metrics, crm.crm_deal, crm.crm_order, crm.crm_product
-- Look for revenue-related fields: amount, value, total_amount, total_mrr, total_revenue_current_value
-
-### CRM Integration & OAuth
-- crm.crm_oauth_token, crm.crm_oauth_session, crm.sync_log
-
-
-## Table Descriptions
-
-### Zeeproc Schema
-- MasterCustomerTable: Core customer info with company details and linked account IDs.
-- Agent_Run_Metadata: Metadata on agent runs tracking customer and client info.
-- Agent_Run_Details: Detailed input/output data for each agent run.
-- Agent_Prompts: Defines agent prompts including text and versioning.
-- Client_Goals: Business goals set for clients with status tracking.
-- Communication_Log: Logs customer interactions with channels and message states.
-- Communication_Detail: Stores communication event content linked to logs.
-- Agent_Execution_Logs: Execution logs of software agents with timing and status.
-- Agent_Execution_Details: Input/output JSON linked to agent execution logs.
-- Agent_Notification: Notifications from agents targeted at users.
-- Agent_Execution_Functional_Metrics: Performance metrics collected during executions.
-
-### SM Schema
-- sm_accounts: Social media accounts linked to customers.
-- sm_contacts: Contacts related to social media accounts.
-- sm_case: Support or issue cases linked to social media accounts and contacts.
-- sm_case_metrics: Aggregated metrics on social media case performance.
-
-### PAT Schema
-- pat_users: Users with email, domain, and segment data.
-- pat_daily_metrics: Daily behavior and usage metrics.
-- pat_summary_metrics: Periodic aggregate metrics for usage trends.
-- pat_engagement_metrics: Detailed engagement event counts and durations.
-
-### Onboarding Schema
-- plan_template: Onboarding plan templates.
-- onboarding_plan: Customer onboarding plans tracking status and stages.
-- plan_project_detail: Financial and scheduling details of onboarding.
-- plan_stakeholder: Contacts and roles involved in onboarding.
-- plan_feedback_contact: Specific feedback contacts in onboarding.
-- plan_milestone: Key onboarding milestones with dates and status.
-- milestone_goal: Goals defined per milestone.
-- milestone_feedback_contact: Contacts for milestone feedback.
-- milestone_comment: Notes and comments on milestones.
-- plan_task: Tasks assigned to milestones with owners and dates.
-- plan_outcome: Expected results from onboarding plans.
-
-### CRM Schema
-- crm_oauth_token: OAuth tokens for CRM platform integration.
-- crm_oauth_session: OAuth authorization session data.
-- crm_account: CRM account info including financials and industry.
-- crm_contact: Contacts within CRM accounts.
-- crm_deal: Sales deals with financial and status info.
-- crm_activity: Activities related to CRM contacts and accounts.
-- crm_product: Products linked to sales deals.
-- crm_order: Orders placed within the CRM system.
-- sync_log: Logs of integration sync operations.
-- crm_financial_metrics: Financial KPIs and churn analytics.
-
-## Critical Column Name Mappings
-- “customer name” → zeeproc.master_customer_table.customer_company_name  
-- “customer id” → zeeproc.master_customer_table.customer_id  
-- “account name” → crm.crm_account.account_name  
-- “deal amount” → crm.crm_deal.amount  
-- “case status” → sm.sm_case.status  
-- “plan status” → onboarding.onboarding_plan.status  
-- “task name” → onboarding.plan_task.name  
-- “agent name” → zeeproc.agent_run_metadata.agent_name  
-- “metric value” → pat.pat_engagement_metrics.events_count  
-
-## Key Schema Relationships
-- Customer → SM: mastercustomertable.sm_account_id = sm_account.sm_account_id = sm_case.sm_account_id
-- Customer → CRM: mastercustomertable.crm_account_id = crm_account.crm_account_id
-- Customer → Onboarding: mastercustomertable.customer_id = onboarding_plan.customer_id
-- Plans → Milestones → Tasks: onboarding_plan.plan_id = plan_milestone.plan_id = plan_task.milestone_id
-- CSM assignments: agent_run_metadata.csm_name
-- Overdue = end_date < CURDATE() AND status <> 'completed'
-- Use FALSE/TRUE for booleans, not 0/1
-
-
-### Join Validation Rules
-- Never join tables directly on customer_id unless explicitly shown in relationships above
-- Always use intermediate tables (e.g., sm_account) when connecting schemas
-- Verify all column names exist in the provided schema before using them
-
+- Always use fully qualified table names (e.g., `sales`.`orders`, `production`.`products`) in the SQL.
+- When calculating revenue, always handle the discount (column `discount` is a decimal percentage, e.g., 0.10 for 10%).
+- `manager_id` in `sales.staffs` is a recursive foreign key to `sales.staffs.staff_id`.
 """
 
 def retrieve_context_heuristic(question: str) -> Tuple[str, str]:
@@ -734,117 +592,102 @@ def retrieve_context_heuristic(question: str) -> Tuple[str, str]:
     """
     q_lower = question.lower()
     
-    # --- Schema keyword mapping ---
+    # --- 1. Define Keywords for BikeStores ---
+    # We map common user terms to the specific schema they belong to.
     SCHEMA_KEYWORDS = {
-        "crm": ["customer", "account", "deal", "revenue", "financial", "crm", "contact", "industry", "arr", "mrr", "churn", "health"],
-        "onboarding": ["onboarding", "milestone", "plan", "task", "behind", "overdue", "schedule", "completion", "progress", "kickoff", "timeline", "delay"],
-        "zeeproc": ["agent", "automation", "execution", "prompt", "communication", "email", "notification", "csm", "workload", "goal", "client", "master"],
-        "sm": ["case", "support", "ticket", "email", "communication", "response", "sentiment", "sm", "social"],
-        "pat": ["metric", "engagement", "usage", "analytics", "performance", "activity", "daily", "summary", "pat", "decline", "trend", "event", "health"]
+        "production": [
+            "bike", "bicycle", "brand", "category", "product", "stock", 
+            "inventory", "model", "price", "mountain", "road", "hybrid", "catalog"
+        ],
+        "sales": [
+            "customer", "client", "order", "staff", "store", "shop", 
+            "revenue", "sales", "discount", "shipped", "pending", "buyer", 
+            "employee", "commission", "manager"
+        ]
     }
-    BUSINESS_TERM_MAPPINGS = {
-    "customer health": ["crm", "sm", "onboarding", "zeeproc"],
-    "at-risk customers": ["pat", "sm", "onboarding", "zeeproc"],
-    "CSM workload": ["zeeproc", "onboarding"],
-    "unread emails": ["zeeproc"],
-    "response time": ["zeeproc"],
-    "churn risk": ["pat", "sm", "onboarding"],
-    }
+    
+    # Terms that imply we need BOTH schemas (joins)
+    CROSS_SCHEMA_TERMS = [
+        "best selling", "most popular", "revenue by product", "sold", "purchased", "available in store"
+    ]
    
     relevant_schemas = set()
 
-    # 1. Exact schema name match
-    for schema in SCHEMAS:
-        if schema in q_lower:
-            relevant_schemas.add(schema)
+    # --- 2. Keyword Matching Logic ---
 
-    # 2. Business-term mappings (high-value signals)
-    for term, schemas in BUSINESS_TERM_MAPPINGS.items():
-        if term in q_lower:
-            relevant_schemas.update(schemas)
+    # A. Check for "Cross Schema" terms first
+    if any(term in q_lower for term in CROSS_SCHEMA_TERMS):
+        relevant_schemas.add("production")
+        relevant_schemas.add("sales")
 
-    # 3. Generic keyword fallback (always run)
+    # B. Check generic keywords
     for schema, keywords in SCHEMA_KEYWORDS.items():
         if any(kw in q_lower for kw in keywords):
             relevant_schemas.add(schema)
 
-    # 4. Multi-schema → include golden key
-    if len(relevant_schemas) >= 2:
-        relevant_schemas.add("zeeproc")
+    # C. Fallback: If the user mentions the schema name explicitly
+    for schema in SCHEMAS:
+        if schema in q_lower:
+            relevant_schemas.add(schema)
 
-    # 5. Ultimate fallback
-    if not relevant_schemas:
-        log.warning(f"No schema detected for question: {question}")
-        # If no relevant schemas detected, return empty schema to signal upstream
-        # that this question is unrelated to the DB. Caller should handle this case
-        # and avoid running SQL generation/execution.
-        return "", "No relevant schema detected."
+    # D. Ultimate Fallback: If we found NOTHING, but we have schemas, just use all of them.
+    # This prevents the "No relevant schema" error for vague queries.
+    if not relevant_schemas and SCHEMAS:
+        relevant_schemas = set(SCHEMAS)
 
-    # 2. Build minimal schema DDL
+    # --- 3. Build the Schema String ---
     schema_lines = []
-    for schema in relevant_schemas:
-        db = get_db(schema)
-        info = db.get_table_info()
-        prefixed = re.sub(
-            r'CREATE TABLE `?([a-zA-Z_][a-zA-Z0-9_]*)`?',
-            f'CREATE TABLE `{schema}`.`\\1`',
-            info
-        )
-        schema_lines.append(f"-- Schema: {schema}\n{prefixed}")
+    
+    # Only try to load schemas that actually exist in the database (SCHEMAS list)
+    valid_schemas = [s for s in relevant_schemas if s in SCHEMAS]
+    
+    if not valid_schemas and not SCHEMAS:
+         # If SCHEMAS is empty, it means auto-discovery failed (permissions or connection issue)
+         log.error("No schemas discovered. Check DB permissions.")
+         return "", "No schemas found in database."
+
+    for schema in valid_schemas:
+        try:
+            db = get_db(schema)
+            info = db.get_table_info()
+            # Prefix table names so the LLM knows which schema is which
+            prefixed = re.sub(
+                r'CREATE TABLE `?([a-zA-Z_][a-zA-Z0-9_]*)`?',
+                f'CREATE TABLE `{schema}`.`\\1`',
+                info
+            )
+            schema_lines.append(f"-- Schema: {schema}\n{prefixed}")
+        except Exception as e:
+            log.error(f"Error loading context for schema {schema}: {e}")
+
     minimal_schema = "\n".join(schema_lines)
 
-    # 3. Filter DOMAIN_HINTS_TEXT by section (not line) to avoid noise
-    all_keywords = set()
-    for s in relevant_schemas:
-        all_keywords.update(SCHEMA_KEYWORDS.get(s, []))
-    all_keywords.update(relevant_schemas)  # e.g., "crm", "pat"
-
-    # Split by section headers (lines starting with "## ")
-    sections = re.split(r"(?=\n## )", DOMAIN_HINTS_TEXT.strip())
-    relevant_sections = []
-
-    for section in sections:
-        if any(kw in section.lower() for kw in all_keywords):
-            relevant_sections.append(section)
-
-    filtered_domain_hints = "".join(relevant_sections).strip() or "No specific domain hints."
-    return minimal_schema, filtered_domain_hints
+    # Return the schema and the (global) domain hints
+    return minimal_schema, DOMAIN_HINTS_TEXT
 # -----------------------------
 # 5) LLM PROMPTS
 # -----------------------------
 SQL_GENERATION_PROMPT = """### Task
-You are a world-class SQL developer specializing in Customer Success Management (CSM) platforms. Generate a single, syntactically correct MySQL SELECT query to answer the user's question, based only on the provided database schema.
+You are a world-class SQL developer specializing in Retail and Inventory Management. Generate a single, syntactically correct MySQL SELECT query to answer the user's question, based only on the provided database schema.
 
 ### Context
-You are working with ZeeProc, an Agentic AI Customer Success Management platform that automates the entire customer lifecycle from onboarding to renewal. The platform manages:
-- Customer relationships and CRM data
-- Communication logs and email management  
-- Onboarding workflows and milestones
-- AI agent performance and automation
-- Team workload and productivity metrics
+You are working with the **BikeStores** database. It is split into two schemas:
+1. **production**: Manages the product catalog, brands, categories, and warehouse stocks.
+2. **sales**: Manages customers, stores, staff, orders, and sales transactions.
 
 ### Rules
 - Output ONLY the SQL query (no backticks, no commentary).
 - Use ONLY tables/columns from the schema.
 - Do NOT include comments.
 - You must generate exactly one complete SQL statement. 
-  - Subqueries (nested SELECTs) are allowed.
-  - UNION, INTERSECT, and EXCEPT are allowed.
-  - Window functions (e.g., ROW_NUMBER, RANK, DENSE_RANK) are allowed.
-- Queries must be read-only (no INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, etc.).
-- Do NOT use multiple separate statements separated by semicolons.
+- Queries must be read-only SELECTs.
+- **CRITICAL**: For cross-schema queries, you MUST use fully qualified table names (e.g., `sales`.`customers`, `production`.`products`).
 - Aggregates, filters, sorting (ORDER BY), and limiting (LIMIT) are allowed.
 - Use explicit JOINs when combining tables.
-- For cross-schema queries, use fully qualified table names (schema.table) when referencing tables from different schemas.
-- Pay special attention to customer_id for joining data across schemas.
-- Consider business context: customer health, revenue metrics, agent performance, communication patterns, onboarding progress.
 
 ### Literal Value Rules
-- Use lowercase for all string literals in comparisons (e.g., 'active', 'completed', 'in_progress', 'unread').
-- Do NOT capitalize status or category values.
-- Example:
-  “WHERE pm.status <> 'completed'”  ✅
-  “WHERE pm.status <> 'Completed'”  ❌
+- Use lowercase for all string literals in comparisons (e.g., 'completed', 'rejected', 'trek', 'mountain bikes').
+- Do NOT capitalize status or category values unless specific in the prompt.
 
 ### Domain Hints & Business Context
 {domain_hints}
